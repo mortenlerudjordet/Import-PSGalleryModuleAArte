@@ -7,6 +7,9 @@
         On a fresh RTE without pre imported Az-module. Manually import Az.Accounts, Az.Automation and Az.Resources first through the portal before executing this Runbook.
         As the runbook will need to authenticate (using Az.Accounts) to Azure before it can run imports.
 
+        Also make sure to create an connection asset of the type AzureServicePrincipal and call it AzureRunAsConnection.
+        Only need to populate TenantId and SubscriptionId with real values, the other just set NA.
+
 .DESCRIPTION
     This Azure Automation Runbook imports a module named as parameter input to AA from PowerShell Gallery.
 
