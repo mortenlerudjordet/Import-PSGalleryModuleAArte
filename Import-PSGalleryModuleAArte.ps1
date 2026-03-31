@@ -7,8 +7,8 @@
         On a fresh RTE without pre imported Az-module. Manually import Az.Accounts, Az.Automation and Az.Resources first through the portal before executing this Runbook.
         As the runbook will need to authenticate (using Az.Accounts) to Azure before it can run imports.
 
-        Also make sure to create an connection asset of the type AzureServicePrincipal and call it AzureRunAsConnection.
-        Only need to populate TenantId and SubscriptionId with real values, the other just set NA.
+        Also make sure to create a connection asset named "AzureRunAsConnection" of type "AzureServicePrincipal" in the Automation account before running this script.
+        Just need to add TenantId and SubscriptionId, the other parameters are not used.
 
 .DESCRIPTION
     This Azure Automation Runbook imports a module named as parameter input to AA from PowerShell Gallery.
@@ -33,9 +33,10 @@
     Optional. The name of the Automation account to update all modules for.
     If an automation account is not specified, , then the logic will try to discover it by getting running jobs from automation accounts in the same sub
 
-.PARAMETER AutomationRuntimeEnvName
-    Optional. Name of runtime environment to target package import to.
-    If an runtime environment is not specified, then the logic will try to discover it by getting running jobs from automation accounts in the same sub
+.PARAMETER AutomationRuntimeEnvNames
+    Name of runtime environments to target package import to.
+    format:
+        ['RTE1','RTE2','RTE3']
 
 .PARAMETER Version
     Optional. If importing only one module desired version can be set
@@ -52,7 +53,7 @@
 
 param(
     [Parameter(Mandatory = $true)]
-    [Array] $NewModuleNames,
+    [String[]] $NewModuleNames,
 
     [Parameter(Mandatory = $false)]
     [String] $AutomationResourceGroupName,
@@ -60,8 +61,8 @@ param(
     [Parameter(Mandatory = $false)]
     [String] $AutomationAccountName,
 
-    [Parameter(Mandatory = $false)]
-    [String] $AutomationRuntimeEnvName,
+    [Parameter(Mandatory = $true)]
+    [String[]] $AutomationRuntimeEnvNames,
 
     [Parameter(Mandatory = $false)]
     [string] $Version = $null,
@@ -76,28 +77,23 @@ $RunbookName = "Import-PSGalleryModuleAArte"
 Write-Output -InputObject "Starting Runbook: $RunbookName at time: $(get-Date -format r).`nRunning PS version: $($PSVersionTable.PSVersion)`nOn host: $($env:computername)`nLocale: $([system.threading.thread]::currentthread.currentculture)"
 
 #region Import Modules
-# Make sure Azure Automation internal modules are available
-Write-Output -InputObject "Checking Automation.Sandbox.AssetManagement.Cmdlets available"
-Import-Module -Name Automation.Sandbox.AssetManagement.Cmdlets -Scope Local -Force -ErrorAction Stop
-
 # Test to se if Az modules are pressent in the rt env
-$MandatoryModules = @("Az.Accounts", "Az.Automation","Az.Resources")
+$MandatoryModules = @("Az.Accounts", "Az.Automation", "Az.Resources")
 $ImportError = $false
-foreach( $Module in $MandatoryModules ) {
+foreach ( $Module in $MandatoryModules ) {
     Import-Module -Name $Module -ErrorAction Continue -ErrorVariable oErr
-    if( $oErr ) {
+    if ( $oErr ) {
         Write-Error -Message "$Module is mandatory for Runbook and is missing from the runtime environment" -ErrorAction Continue
         $ImportError = $true
         $oErr = $null
     }
 }
-if( $ImportError ) {
+if ( $ImportError ) {
     Write-Error -Message "One or more of the mandatory modules are missing from runtime environment" -ErrorAction Stop
 }
 
 
-if((Get-Module -Name "Az.Accounts" -ListAvailable) -and (Get-Module -Name "Az.Automation" -ListAvailable) -and (Get-Module -Name "Az.Resources" -ListAvailable))
-{
+if ((Get-Module -Name "Az.Accounts" -ListAvailable) -and (Get-Module -Name "Az.Automation" -ListAvailable) -and (Get-Module -Name "Az.Resources" -ListAvailable)) {
     $AccountsModule = Get-Module -Name Az.Accounts -ListAvailable | Sort-Object -Unique -Descending -Property Version | Select-Object -First 1
     $AutomationModule = Get-Module -Name Az.Automation -ListAvailable | Sort-Object -Unique -Descending -Property Version | Select-Object -First 1
     $ResourcesModule = Get-Module -Name Az.Resources -ListAvailable | Sort-Object -Unique -Descending -Property Version | Select-Object -First 1
@@ -107,14 +103,12 @@ if((Get-Module -Name "Az.Accounts" -ListAvailable) -and (Get-Module -Name "Az.Au
     Write-Output -InputObject "Running Az.Resources version: $($ResourcesModule.Version)"
 
     Import-Module -Name Az.Accounts, Az.Automation, Az.Resources -ErrorAction Continue -ErrorVariable oErr
-    if($oErr)
-    {
+    if ($oErr) {
         Write-Error -Message "Failed to load needed modules for Runbook: Az.Accounts, Az.Automation,Az.Resources" -ErrorAction Continue
         throw "Check AA account for modules"
     }
 }
-else
-{
+else {
     Write-Error -Message "Did not find Az modules installed in Automation account: $AutomationAccountName" -ErrorAction Stop
 }
 
@@ -137,8 +131,7 @@ $script:PsGalleryApiUrl = 'https://www.powershellgallery.com/api/v2'
 #region Functions
 
 #region Get-AutomationJob
-function Get-AutomationJob
-{
+function Get-AutomationJob {
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory = $true)]
@@ -156,52 +149,52 @@ function Get-AutomationJob
     try {
         $ReturnJobs = @()
         $AzContext = Get-AzContext
-        if( $AzContext  ) {
+        if ( $AzContext  ) {
             $AArtEnvURL = "https://management.azure.com/subscriptions/$($AzContext.Subscription.Id)/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/jobs?api-version=2024-10-23"
 
             $Response = Invoke-AzRestMethod -Uri $AArtEnvURL -Method GET -ErrorAction Continue -ErrorVariable oErr
-            if($oErr) {
+            if ($oErr) {
                 Write-Error -Message "Failed to get packages from runtime environment: $RuntimeEnvironmentName in automation account: $AutomationAccountName" -ErrorAction Stop
             }
             else {
-                if( $Response ) {
+                if ( $Response ) {
                     $AAjobs = ($Response.Content | ConvertFrom-Json ).value
 
-                    if( $RunbookName -and $Status) {
-                        $AAfilteredJobs = $AAjobs | Where-Object {$PSItem.properties.runbook.name -eq $RunbookName -and $PSItem.properties.status -eq $Status}
+                    if ( $RunbookName -and $Status) {
+                        $AAfilteredJobs = $AAjobs | Where-Object { $PSItem.properties.runbook.name -eq $RunbookName -and $PSItem.properties.status -eq $Status }
                     }
-                    elseif( $RunbookName ) {
-                        $AAfilteredJobs = $AAjobs | Where-Object {$PSItem.properties.runbook.name -eq $RunbookName }
+                    elseif ( $RunbookName ) {
+                        $AAfilteredJobs = $AAjobs | Where-Object { $PSItem.properties.runbook.name -eq $RunbookName }
                     }
-                    elseif( $Status) {
-                        $AAfilteredJobs = $AAjobs | Where-Object {$PSItem.properties.status -eq $Status }
+                    elseif ( $Status) {
+                        $AAfilteredJobs = $AAjobs | Where-Object { $PSItem.properties.status -eq $Status }
                     }
                     else {
                         $AAfilteredJobs = $AAjobs
                     }
 
-                    foreach($Job in $AAfilteredJobs) {
+                    foreach ($Job in $AAfilteredJobs) {
                         $CustomJob = [PSCustomObject][ordered]@{
-                            ResourceGroupName       = $ResourceGroupName
-                            AutomationAccountName   = $AutomationAccountName
-                            RunbookName             = $Job.properties.runbook.name
-                            RuntimeEnvironmentName  = $Job.properties.jobRuntimeEnvironment.runtimeEnvironmentName
-                            Status                  = $Job.properties.status
+                            ResourceGroupName      = $ResourceGroupName
+                            AutomationAccountName  = $AutomationAccountName
+                            RunbookName            = $Job.properties.runbook.name
+                            RuntimeEnvironmentName = $Job.properties.jobRuntimeEnvironment.runtimeEnvironmentName
+                            Status                 = $Job.properties.status
                         }
                         $ReturnJobs += $CustomJob
                         $CustomJob = $null
                     }
-                    if( $ReturnJobs ) {
+                    if ( $ReturnJobs ) {
                         return $ReturnJobs
                     }
                     else {
-                        if( $RunbookName -and $Status) {
+                        if ( $RunbookName -and $Status) {
                             Write-Warning -Message "No jobs found for runbook: $RunbookName with status: $Status in automation account: $AutomationAccountName"
                         }
-                        elseif( $Status ) {
+                        elseif ( $Status ) {
                             Write-Warning -Message "No jobs found with status: $Status in automation account: $AutomationAccountName"
                         }
-                        elseif( $RunbookName ) {
+                        elseif ( $RunbookName ) {
                             Write-Warning -Message "No jobs found for runbook: $RunbookName in automation account: $AutomationAccountName"
                         }
                         else {
@@ -220,12 +213,10 @@ function Get-AutomationJob
 
     }
     catch {
-        if ($_.Exception.Message)
-        {
+        if ($_.Exception.Message) {
             Write-Error -Message "$($_.Exception.Message)" -ErrorAction Continue
         }
-        else
-        {
+        else {
             Write-Error -Message "$($_.Exception)" -ErrorAction Continue
         }
         throw "$($_.Exception)"
@@ -234,8 +225,7 @@ function Get-AutomationJob
 #endregion
 
 #region Get-RuntimeEnvAutomationModule
-function Get-RuntimeEnvAutomationModule
-{
+function Get-RuntimeEnvAutomationModule {
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory = $true)]
@@ -253,8 +243,8 @@ function Get-RuntimeEnvAutomationModule
     try {
         $CustomAArtEnvPackages = @()
         $AzContext = Get-AzContext
-        if( $AzContext  ) {
-            if( $Name ) {
+        if ( $AzContext  ) {
+            if ( $Name ) {
                 $AArtEnvURL = "https://management.azure.com/subscriptions/$($AzContext.Subscription.Id)/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runtimeEnvironments/$RuntimeEnvironmentName/packages/$($Name)?api-version=2024-10-23"
             }
             else {
@@ -262,38 +252,38 @@ function Get-RuntimeEnvAutomationModule
             }
 
             $Response = Invoke-AzRestMethod -Uri $AArtEnvURL -Method GET -ErrorAction Continue -ErrorVariable oErr
-            if($oErr) {
+            if ($oErr) {
                 Write-Error -Message "Failed to get packages from runtime environment: $RuntimeEnvironmentName in automation account: $AutomationAccountName" -ErrorAction Stop
             }
             else {
-                if( $Response ) {
-                    if( $Name ) {
+                if ( $Response ) {
+                    if ( $Name ) {
                         $AArtEnvPackages = ($Response.Content | ConvertFrom-Json)
                     }
                     else {
                         $AArtEnvPackages = ($Response.Content | ConvertFrom-Json).value
                     }
 
-                    ForEach($Package in $AArtEnvPackages) {
+                    ForEach ($Package in $AArtEnvPackages) {
                         $CustomAPackage = [PSCustomObject][ordered]@{
-                            ResourceGroupName       = $ResourceGroupName
-                            AutomationAccountName   = $AutomationAccountName
-                            RuntimeEnvironmentName  = $RuntimeEnvironmentName
-                            Name                    = $Package.name
-                            Version                 = $Package.Properties.version
-                            SizeInBytes             = $Package.Properties.sizeInBytes
-                            CreationTime            = $Package.systemData.createdAt
-                            LastModifiedTime        = $Package.systemData.lastModifiedAt
-                            ProvisioningState       = $Package.Properties.provisioningState
+                            ResourceGroupName      = $ResourceGroupName
+                            AutomationAccountName  = $AutomationAccountName
+                            RuntimeEnvironmentName = $RuntimeEnvironmentName
+                            Name                   = $Package.name
+                            Version                = $Package.Properties.version
+                            SizeInBytes            = $Package.Properties.sizeInBytes
+                            CreationTime           = $Package.systemData.createdAt
+                            LastModifiedTime       = $Package.systemData.lastModifiedAt
+                            ProvisioningState      = $Package.Properties.provisioningState
                         }
                         $CustomAArtEnvPackages += $CustomAPackage
                         $CustomAPackage = $null
                     }
-                    if( $CustomAArtEnvPackages ) {
+                    if ( $CustomAArtEnvPackages ) {
                         return $CustomAArtEnvPackages
                     }
                     else {
-                        if( $Name ) {
+                        if ( $Name ) {
                             Write-Warning -Message "No packages with name: $Name found in runtime environment: $RuntimeEnvironmentName hosted in automation account: $AutomationAccountName"
                         }
                         else {
@@ -312,12 +302,10 @@ function Get-RuntimeEnvAutomationModule
 
     }
     catch {
-        if ($_.Exception.Message)
-        {
+        if ($_.Exception.Message) {
             Write-Error -Message "$($_.Exception.Message)" -ErrorAction Continue
         }
-        else
-        {
+        else {
             Write-Error -Message "$($_.Exception)" -ErrorAction Continue
         }
         throw "$($_.Exception)"
@@ -326,8 +314,7 @@ function Get-RuntimeEnvAutomationModule
 #endregion
 
 #region New-RuntimeEnvAutomationModule
-function New-RuntimeEnvAutomationModule
-{
+function New-RuntimeEnvAutomationModule {
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory = $true)]
@@ -348,38 +335,38 @@ function New-RuntimeEnvAutomationModule
     try {
         $CustomAArtEnvPackages = @()
         $AzContext = Get-AzContext
-        if( $AzContext  ) {
+        if ( $AzContext  ) {
             $AArtEnvURL = "https://management.azure.com/subscriptions/$($AzContext.Subscription.Id)/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/runtimeEnvironments/$RuntimeEnvironmentName/packages/$($Name)?api-version=2024-10-23"
             $Payload = @{
                 "properties" = @{
-                  "contentLink" = @{
-                      "uri" = $ContentLink
-                  }
+                    "contentLink" = @{
+                        "uri" = $ContentLink
+                    }
                 }
-              }
+            }
             $Response = Invoke-AzRestMethod -Uri $AArtEnvURL -Payload $($Payload | ConvertTo-Json) -Method PUT -ErrorAction Continue -ErrorVariable oErr
-            if($oErr) {
+            if ($oErr) {
                 Write-Error -Message "Failed to upload package: $Name to environment: $RuntimeEnvironmentName in account: $AutomationAccountName" -ErrorAction Stop
             }
-            elseif( $Response.StatusCode -notmatch '20[01]' ) {
+            elseif ( $Response.StatusCode -notmatch '20[01]' ) {
                 Write-Error -Message "API returned status code: $($Response.StatusCode) trying to upload package: $Name to environment: $RuntimeEnvironmentName in account: $AutomationAccountName" -ErrorAction Continue
                 $ResponseContent = $Response.Content | ConvertFrom-Json
-                if( $ResponseContent.error ) {
+                if ( $ResponseContent.error ) {
                     Write-Error -Message "Error message: $($ResponseContent.error.message)" -ErrorAction Stop
                 }
             }
             else {
-                if( $Response ) {
+                if ( $Response ) {
                     $ResponseInfo = $Response.Content | ConvertFrom-Json
                     Write-Output -InputObject "Package Upload status: $($ResponseInfo.properties.provisioningState)"
                     $ResponseInfo = $Response.Content | ConvertFrom-Json
                     $PackageInfo = [PSCustomObject][ordered]@{
-                        ResourceGroupName       = $ResourceGroupName
-                        AutomationAccountName   = $AutomationAccountName
-                        RuntimeEnvironmentName  = $RuntimeEnvironmentName
-                        Name                    = $Name
-                        ContentLink             = $ContentLink
-                        ProvisioningState       = $ResponseInfo.Properties.provisioningState
+                        ResourceGroupName      = $ResourceGroupName
+                        AutomationAccountName  = $AutomationAccountName
+                        RuntimeEnvironmentName = $RuntimeEnvironmentName
+                        Name                   = $Name
+                        ContentLink            = $ContentLink
+                        ProvisioningState      = $ResponseInfo.Properties.provisioningState
                     }
                     return $PackageInfo
                 }
@@ -393,12 +380,10 @@ function New-RuntimeEnvAutomationModule
         }
     }
     catch {
-        if ($_.Exception.Message)
-        {
+        if ($_.Exception.Message) {
             Write-Error -Message "$($_.Exception.Message)" -ErrorAction Continue
         }
-        else
-        {
+        else {
             Write-Error -Message "$($_.Exception)" -ErrorAction Continue
         }
         throw "$($_.Exception)"
@@ -407,8 +392,7 @@ function New-RuntimeEnvAutomationModule
 #endregion
 
 #region doModuleImport
-function doModuleImport
-{
+function doModuleImport {
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory = $true)]
@@ -427,54 +411,46 @@ function doModuleImport
         [Parameter(Mandatory = $false)]
         [String] $ModuleVersion
     )
-    try
-    {
+    try {
         $Filter = @($ModuleName.Trim('*').Split('*') | ForEach-Object { "substringof('$_',Id)" }) -join " and "
         $Url = "$script:PsGalleryApiUrl/Packages?`$filter=$Filter and IsLatestVersion"
 
         # Fetch results and filter them with -like, and then shape the output
         $SearchResult = Invoke-RestMethod -Method Get -Uri $Url -ErrorAction Continue -ErrorVariable oErr | Where-Object { $_.title.'#text' -like $ModuleName } |
-            Select-Object @{n = 'Name'; ex = {$_.title.'#text'}},
-        @{n = 'Version'; ex = {$_.properties.version}},
-        @{n = 'Url'; ex = {$_.Content.src}},
-        @{n = 'Dependencies'; ex = {$_.properties.Dependencies}},
-        @{n = 'Owners'; ex = {$_.properties.Owners}}
-        If($oErr)
-        {
+            Select-Object @{n = 'Name'; ex = { $_.title.'#text' } },
+            @{n = 'Version'; ex = { $_.properties.version } },
+            @{n = 'Url'; ex = { $_.Content.src } },
+            @{n = 'Dependencies'; ex = { $_.properties.Dependencies } },
+            @{n = 'Owners'; ex = { $_.properties.Owners } }
+        If ($oErr) {
             # Will stop runbook, though message will not be logged
             Write-Error -Message "Failed to retrieve details of module: $ModuleName from Gallery" -ErrorAction Stop
         }
         # Should not be needed as filter will only return one hit, though will keep the code to strip away if search ever get multiple hits
-        if($SearchResult.Length -and $SearchResult.Length -gt 1)
-        {
+        if ($SearchResult.Length -and $SearchResult.Length -gt 1) {
             $SearchResult = $SearchResult | Where-Object -FilterScript {
                 return $_.Name -eq $ModuleName
             }
         }
 
-        if(-not $SearchResult)
-        {
+        if (-not $SearchResult) {
             Write-Warning "Could not find module '$ModuleName' on PowerShell Gallery. This may be a module you imported from a different location"
         }
-        else
-        {
+        else {
             $ModuleName = $SearchResult.Name # get correct casing for the module name
 
-            if(-not $ModuleVersion)
-            {
+            if (-not $ModuleVersion) {
                 # get latest version
                 $ModuleContentUrl = $SearchResult.Url
             }
-            else
-            {
+            else {
                 $ModuleContentUrl = "$($script:PsGalleryApiUrl)/package/$ModuleName/$ModuleVersion"
             }
 
             # Make sure module dependencies are imported
             $Dependencies = $SearchResult.Dependencies
 
-            if($Dependencies -and $Dependencies.Length -gt 0)
-            {
+            if ($Dependencies -and $Dependencies.Length -gt 0) {
                 # Track recursion depth
                 $script:RecursionDepth ++
                 $Dependencies = $Dependencies.Split("|")
@@ -482,22 +458,18 @@ function doModuleImport
                 # parse dependencies, which are in the format: module1name:module1version:|module2name:module2version:
                 $Dependencies | ForEach-Object {
 
-                    if( $_ -and $_.Length -gt 0 )
-                    {
+                    if ( $_ -and $_.Length -gt 0 ) {
                         $Parts = $_.Split(":")
                         $DependencyName = $Parts[0]
                         # Gallery is returning double the same version number on some modules: Az.Aks:[1.0.1, 1.0.1] some do [1.0.1, ]
-                        if($Parts[1] -match ",")
-                        {
+                        if ($Parts[1] -match ",") {
                             $DependencyVersion = (($Parts[1]).Split(","))[0] -replace "[^0-9.]", ''
                         }
-                        else
-                        {
+                        else {
                             $DependencyVersion = $Parts[1] -replace "[^0-9.]", ''
                         }
                         # check if we already imported this dependency module during execution of this script
-                        if( -not $script:ModulesImported.Contains($DependencyName) )
-                        {
+                        if ( -not $script:ModulesImported.Contains($DependencyName) ) {
                             # check if Automation account already contains this dependency module of the right version
                             $AutomationModule = $null
                             $AutomationModule = Get-RuntimeEnvAutomationModule `
@@ -510,8 +482,7 @@ function doModuleImport
                             $AutomationModule = $AutomationModule | Where-Object { $PsItem.IsGlobal -eq $false }
                             # Do not downgrade version of module if newer exists in Automation account (limitation of AA that one can only have only one version of a module imported)
                             # limit also recursion depth of dependencies search
-                            if( ($script:RecursionDepth -le $script:RecursionDepthLimit) -and ((-not $AutomationModule) -or [System.Version]$AutomationModule.Version -lt [System.Version]$DependencyVersion) )
-                            {
+                            if ( ($script:RecursionDepth -le $script:RecursionDepthLimit) -and ((-not $AutomationModule) -or [System.Version]$AutomationModule.Version -lt [System.Version]$DependencyVersion) ) {
                                 Write-Output -InputObject "$ModuleName depends on: $DependencyName with version $DependencyVersion, importing this module first"
 
                                 # this dependency module has not been imported, import it first
@@ -526,13 +497,11 @@ function doModuleImport
                                 $null = $script:ModulesImported.Add($DependencyName)
                                 $script:RecursionDepth --
                             }
-                            else
-                            {
+                            else {
                                 Write-Output -InputObject "$ModuleName has a dependency on: $DependencyName with version: $DependencyVersion, though this is already installed with version: $($AutomationModule.Version)"
                             }
                         }
-                        else
-                        {
+                        else {
                             Write-Output -InputObject "$DependencyName already imported to Automation account"
                         }
                     }
@@ -540,55 +509,45 @@ function doModuleImport
             }
 
             # Find the actual blob storage location of the module
-            do
-            {
+            do {
                 $ActualUrl = $ModuleContentUrl
                 # In PS 7.1 settting -MaximumRedirection 0 will throw an termination error
-                if( $PSVersionTable.PSVersion.Major -eq 7 )
-                {
+                if ( $PSVersionTable.PSVersion.Major -eq 7 ) {
                     Write-Verbose -Message "Running under PS 7 or newer"
-                    try
-                    {
+                    try {
                         $Content = Invoke-WebRequest -Uri $ModuleContentUrl -MaximumRedirection 0 -SkipHttpErrorCheck -ErrorAction Ignore
                     }
-                    catch
-                    {
+                    catch {
                         Write-Verbose -Message "Invoke-WebRequest termination error detected"
                     }
                 }
-                else
-                {
+                else {
                     Write-Verbose -Message "Running under PS 5.1"
                     $Content = Invoke-WebRequest -Uri $ModuleContentUrl -MaximumRedirection 0 -UseBasicParsing -ErrorAction Ignore
                 }
                 [String]$ModuleContentUrl = $Content.Headers.Location
                 Write-Verbose -Message "Module content location URL found inside loop is: $ModuleContentUrl"
             }
-            while( $ModuleContentUrl -notmatch ".nupkg" -or [string]::IsNullOrEmpty($ModuleContentUrl) )
+            while ( $ModuleContentUrl -notmatch ".nupkg" -or [string]::IsNullOrEmpty($ModuleContentUrl) )
 
             Write-Verbose -Message "Do/While loop ended"
 
-            if( [string]::IsNullOrEmpty($ModuleContentUrl) )
-            {
+            if ( [string]::IsNullOrEmpty($ModuleContentUrl) ) {
                 Write-Error -Message "Fetching module content URL returned empty value." -ErrorAction Stop
             }
-            else
-            {
+            else {
                 Write-Verbose -Message "Final Module content location URL is: $ModuleContentUrl"
             }
 
             $ActualUrl = $ModuleContentUrl
 
-            if($ModuleVersion)
-            {
+            if ($ModuleVersion) {
                 Write-Output -InputObject "Importing version: $ModuleVersion of module: $ModuleName to Automation account"
             }
-            else
-            {
+            else {
                 Write-Output -InputObject "Importing version: $($SearchResult.Version) of module: $ModuleName to Automation account"
             }
-            if(-not ([string]::IsNullOrEmpty($ActualUrl)))
-            {
+            if (-not ([string]::IsNullOrEmpty($ActualUrl))) {
                 $AutomationModule = New-RuntimeEnvAutomationModule `
                     -ResourceGroupName $AutomationResourceGroupName `
                     -AutomationAccountName $AutomationAccountName `
@@ -596,14 +555,13 @@ function doModuleImport
                     -Name $ModuleName `
                     -ContentLink $ActualUrl -ErrorAction continue
                 $oErr = $null
-                while(
+                while (
                     (-not ([string]::IsNullOrEmpty($AutomationModule))) -and
                     $AutomationModule.ProvisioningState -ne "Created" -and
                     $AutomationModule.ProvisioningState -ne "Succeeded" -and
                     $AutomationModule.ProvisioningState -ne "Failed" -and
                     [string]::IsNullOrEmpty($oErr)
-                )
-                {
+                ) {
                     Start-Sleep -Seconds 5
                     Write-Verbose -Message "Polling module import status for: $($AutomationModule.Name)"
                     $AutomationModule = Get-RuntimeEnvAutomationModule `
@@ -612,39 +570,31 @@ function doModuleImport
                         -RuntimeEnvironmentName $AutomationRuntimeEnvName `
                         -Name $AutomationModule.Name `
                         -ErrorAction SilentlyContinue -ErrorVariable oErr
-                    if($oErr)
-                    {
+                    if ($oErr) {
                         Write-Error -Message "Error fetching module status for: $($AutomationModule.Name)" -ErrorAction Continue
                     }
-                    else
-                    {
+                    else {
                         Write-Verbose -Message "Module import pull status: $($AutomationModule.ProvisioningState)"
                     }
                 }
-                if( ($AutomationModule.ProvisioningState -eq "Failed") -or $oErr )
-                {
+                if ( ($AutomationModule.ProvisioningState -eq "Failed") -or $oErr ) {
                     Write-Error -Message "Failed to import of $($AutomationModule.Name) module to Automation account: $AutomationAccountName." -ErrorAction Continue
                     $oErr = $null
                 }
-                else
-                {
+                else {
                     Write-Output -InputObject "Import of $ModuleName module to Automation account succeeded."
                 }
             }
-            else
-            {
+            else {
                 Write-Error -Message "Failed to retrieve download URL of module: $ModuleName in Gallery, update of module aborted" -ErrorId continue
             }
         }
     }
-    catch
-    {
-        if ($_.Exception.Message)
-        {
+    catch {
+        if ($_.Exception.Message) {
             Write-Error -Message "$($_.Exception.Message)" -ErrorAction Continue
         }
-        else
-        {
+        else {
             Write-Error -Message "$($_.Exception)" -ErrorAction Continue
         }
         throw "$($_.Exception)"
@@ -655,48 +605,38 @@ function doModuleImport
 #endregion
 
 #region Main
-try
-{
+try {
     $AAconAsset = "AzureRunAsConnection"
     $RunAsConnection = Get-AutomationConnection -Name $AAconAsset
     if ( [string]::IsNullOrEmpty($RunAsConnection) ) {
         Write-Error -Message "AA asset: $AAconAsset is empty or missing. Check that the asset is created in AA and has valid entries" -ErrorAction Stop
     }
-    if($RunAsConnection)
-    {
-        Write-Output -InputObject ("Authenticating...")
+    if ($RunAsConnection) {
+        Write-Output -InputObject "Authenticating..."
 
-        $Null = Connect-AzAccount -Identity -ErrorAction Continue -ErrorVariable oErr
-        if($oErr)
-        {
+        $Null = Connect-AzAccount -SubscriptionId $RunAsConnection.SubscriptionID -TenantId $RunAsConnection.TenantId -Identity -ErrorAction Continue -ErrorVariable oErr
+        if ($oErr) {
             Write-Error -Message "Failed to connect to Azure Resource Manager using Managed Service Identity" -ErrorAction Stop
         }
-
-        Write-Verbose -Message "Selecting subscription to use"
-        $Subscription = Select-AzSubscription -SubscriptionId $RunAsConnection.SubscriptionID -TenantId $RunAsConnection.TenantId -ErrorAction Continue -ErrorVariable oErr
-        if($oErr)
-        {
-            Write-Error -Message "Failed to select Azure subscription" -ErrorAction Stop
+        $Subscription = Get-AzContext -ErrorAction Continue -ErrorVariable oErr
+        if ($oErr) {
+            Write-Error -Message "Failed to get current Azure subscription context" -ErrorAction Stop
         }
-        else
-        {
+        else {
             Write-Output -InputObject "Running in subscription: $($Subscription.Subscription.Name) and tenantId: $($Subscription.Tenant.Id)"
         }
 
         # Find the automation account or resource group is not specified
-        if  (([string]::IsNullOrEmpty($AutomationResourceGroupName)) -or ([string]::IsNullOrEmpty($AutomationAccountName)))
-        {
+        if (([string]::IsNullOrEmpty($AutomationResourceGroupName)) -or ([string]::IsNullOrEmpty($AutomationAccountName))) {
 
             $AutomationResources = Get-AzResource -ResourceType Microsoft.Automation/AutomationAccounts -ErrorAction Continue -ErrorVariable oErr
-            if( $oErr ) {
+            if ( $oErr ) {
                 Write-Error -Message "Failed to retrieve automation accounts in subscription: $($Subscription.Subscription.Name)" -ErrorAction Stop
             }
 
-            foreach ($Automation in $AutomationResources)
-            {
+            foreach ($Automation in $AutomationResources) {
                 $Job = Get-AutomationJob -ResourceGroupName $Automation.ResourceGroupName -AutomationAccountName $Automation.Name -RunbookName $RunbookName -Status "Running" -ErrorAction SilentlyContinue
-                if (-not ([string]::IsNullOrEmpty($Job)))
-                {
+                if (-not ([string]::IsNullOrEmpty($Job))) {
                     $AutomationResourceGroupName = $Job.ResourceGroupName
                     $AutomationAccountName = $Job.AutomationAccountName
                     $AutomationRuntimeEnvName = $Job.RuntimeEnvironmentName
@@ -706,103 +646,89 @@ try
                     Write-Warning -Message "No running jobs found for Runbook: $RunbookName in account: $($Automation.Name)."
                 }
             }
-            if($AutomationAccountName)
-            {
+            if ($AutomationAccountName) {
                 Write-Output -InputObject "Using AA account: $AutomationAccountName in resource group: $AutomationResourceGroupName and runtime environment: $AutomationRuntimeEnvName"
             }
-            else
-            {
+            else {
                 Write-Error -Message "Failed to discover automation account, execution stopped" -ErrorAction Stop
             }
         }
     }
-    else
-    {
+    else {
         Write-Error -Message "Check that AzureRunAsConnection is configured for AA account: $AutomationAccountName" -ErrorAction Stop
     }
+    # Each RTE in array
+    foreach ($AutomationRuntimeEnvName in $AutomationRuntimeEnvNames) {
+        Write-Output -InputObject "`nImporting modules to RTE: $AutomationRuntimeEnvName"
+        # Import module if specified
+        if (!([string]::IsNullOrEmpty($NewModuleNames))) {
+            foreach ($NewModuleName in $NewModuleNames) {
+                # Check if module exists in the gallery
+                $Filter = @($NewModuleName.Trim('*').Split('*') | ForEach-Object { "substringof('$_',Id)" }) -join " and "
+                $Url = "$script:PsGalleryApiUrl/Packages?`$filter=$Filter and IsLatestVersion"
 
-    # Import module if specified
-    if (!([string]::IsNullOrEmpty($NewModuleNames)))
-    {
-         foreach($NewModuleName in $NewModuleNames)
-         {
-            # Check if module exists in the gallery
-            $Filter = @($NewModuleName.Trim('*').Split('*') | ForEach-Object { "substringof('$_',Id)" }) -join " and "
-            $Url = "$script:PsGalleryApiUrl/Packages?`$filter=$Filter and IsLatestVersion"
-
-            # Fetch results and filter them with -like, and then shape the output
-            $SearchResult = Invoke-RestMethod -Method Get -Uri $Url -ErrorAction Continue -ErrorVariable oErr | Where-Object { $_.title.'#text' -like $NewModuleName } |
-                Select-Object @{n = 'Name'; ex = {$_.title.'#text'}},
-            @{n = 'Version'; ex = {$_.properties.version}},
-            @{n = 'Url'; ex = {$_.Content.src}},
-            @{n = 'Dependencies'; ex = {$_.properties.Dependencies}},
-            @{n = 'Owners'; ex = {$_.properties.Owners}}
-            If($oErr)
-            {
-                # Will stop runbook, though message will not be logged
-                Write-Error -Message "Failed to query Gallery" -ErrorAction Stop
-            }
-
-            if($SearchResult.Length -and $SearchResult.Length -gt 1)
-            {
-                $SearchResult = $SearchResult | Where-Object -FilterScript {
-                    return $_.Name -eq $NewModuleName
+                # Fetch results and filter them with -like, and then shape the output
+                $SearchResult = Invoke-RestMethod -Method Get -Uri $Url -ErrorAction Continue -ErrorVariable oErr | Where-Object { $_.title.'#text' -like $NewModuleName } |
+                    Select-Object @{n = 'Name'; ex = { $_.title.'#text' } },
+                    @{n = 'Version'; ex = { $_.properties.version } },
+                    @{n = 'Url'; ex = { $_.Content.src } },
+                    @{n = 'Dependencies'; ex = { $_.properties.Dependencies } },
+                    @{n = 'Owners'; ex = { $_.properties.Owners } }
+                If ($oErr) {
+                    # Will stop runbook, though message will not be logged
+                    Write-Error -Message "Failed to query Gallery" -ErrorAction Stop
                 }
-            }
 
-            if(!$SearchResult)
-            {
-                throw "Could not find module '$NewModuleName' on PowerShell Gallery."
-            }
-
-            if ($NewModuleName -notin $Modules.Name -or [System.Convert]::ToBoolean($Force))
-            {
-
-                if($NewModuleNames.Count -eq 1 -and $Version)
-                {
-                    Write-Output -InputObject "Module to import: '$NewModuleName' with specific version: $Version"
-                    doModuleImport `
-                    -AutomationResourceGroupName $AutomationResourceGroupName `
-                    -AutomationAccountName $AutomationAccountName `
-                    -RuntimeEnvironmentName $AutomationRuntimeEnvName `
-                    -ModuleName $NewModuleName `
-                    -ModuleVersion $Version -ErrorAction Continue
+                if ($SearchResult.Length -and $SearchResult.Length -gt 1) {
+                    $SearchResult = $SearchResult | Where-Object -FilterScript {
+                        return $_.Name -eq $NewModuleName
+                    }
                 }
-                else
-                {
-                    Write-Output -InputObject "Module to import: '$NewModuleName' using latest available in Gallery"
-                    doModuleImport `
-                    -AutomationResourceGroupName $AutomationResourceGroupName `
-                    -AutomationAccountName $AutomationAccountName `
-                    -RuntimeEnvironmentName $AutomationRuntimeEnvName `
-                    -ModuleName $NewModuleName -ErrorAction Continue
+
+                if (!$SearchResult) {
+                    throw "Could not find module '$NewModuleName' on PowerShell Gallery."
                 }
-            }
-            else
-            {
-                Write-Output -InputObject "Module $NewModuleName is already imported to the automation account"
+
+                if ($NewModuleName -notin $Modules.Name -or [System.Convert]::ToBoolean($Force)) {
+
+                    if ($NewModuleNames.Count -eq 1 -and $Version) {
+                        Write-Output -InputObject "Module to import: '$NewModuleName' with specific version: $Version"
+                        doModuleImport `
+                            -AutomationResourceGroupName $AutomationResourceGroupName `
+                            -AutomationAccountName $AutomationAccountName `
+                            -RuntimeEnvironmentName $AutomationRuntimeEnvName `
+                            -ModuleName $NewModuleName `
+                            -ModuleVersion $Version -ErrorAction Continue
+                    }
+                    else {
+                        Write-Output -InputObject "Module to import: '$NewModuleName' using latest available in Gallery"
+                        doModuleImport `
+                            -AutomationResourceGroupName $AutomationResourceGroupName `
+                            -AutomationAccountName $AutomationAccountName `
+                            -RuntimeEnvironmentName $AutomationRuntimeEnvName `
+                            -ModuleName $NewModuleName -ErrorAction Continue
+                    }
+                }
+                else {
+                    Write-Output -InputObject "Module $NewModuleName is already imported to the automation account"
+                }
             }
         }
-    }
-    else
-    {
-        Write-Warning -Message "No Module name to import was entered"
+        else {
+            Write-Warning -Message "No Module name to import was entered"
+        }
     }
 }
-catch
-{
-    if ($_.Exception.Message)
-    {
+catch {
+    if ($_.Exception.Message) {
         Write-Error -Message "$($_.Exception.Message)" -ErrorAction Continue
     }
-    else
-    {
+    else {
         Write-Error -Message "$($_.Exception)" -ErrorAction Continue
     }
     throw "$($_.Exception)"
 }
-finally
-{
+finally {
     Write-Output -InputObject "Runbook: $RunbookName ended at time: $(get-Date -format r)"
 }
 #endregion Main
